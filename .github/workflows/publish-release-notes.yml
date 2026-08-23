@@ -47,8 +47,17 @@ jobs:
           test "$CONFIRMATION" = "PUBLISH RELEASE NOTES"
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          evidence_tag="ci-$SOURCE_SHA"
+          expected_url="https://github.com/$GITHUB_REPOSITORY/releases/download/$evidence_tag/ci-manifest.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$evidence_tag" \
+            | jq -e --arg tag "$evidence_tag" --arg url "$expected_url" '
+              .tag_name == $tag and .draft == false and .prerelease == false and
+              (.assets | length) == 1 and .assets[0].name == "ci-manifest.json" and
+              (.assets[0].size >= 100 and .assets[0].size <= 4096) and
+              .assets[0].browser_download_url == $url
+            ' >/dev/null
           evidence="$RUNNER_TEMP/ci-manifest.json"
-          gh release download "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" \
+          gh release download "$evidence_tag" --repo "$GITHUB_REPOSITORY" \
             --pattern ci-manifest.json --output "$evidence"
           jq -e --arg sha "$SOURCE_SHA" '
             .schema_version == 1 and .source_repository == "private" and
@@ -56,6 +65,13 @@ jobs:
             ((.suites | sort) == ["backend","frontend","repository"]) and
             (.run_url | test("^https://github\\.com/Yvictor/whalex-ci/actions/runs/[1-9][0-9]*$"))
           ' "$evidence" >/dev/null
+          run_id="$(jq -r '.run_url | split("/")[-1]' "$evidence")"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+            | jq -e '
+              .status == "completed" and .conclusion == "success" and
+              .head_branch == "main" and .path == ".github/workflows/ci.yml" and
+              .repository.full_name == "Yvictor/whalex-ci"
+            ' >/dev/null
           build_json="$(curl --fail --silent --show-error --max-time 15 https://whalexstock.com/whalex-build.json)"
           test "$(jq -r '.commit_sha // empty' <<<"$build_json")" = "$SOURCE_SHA"
           test "$(jq -r '.release_tag // empty' <<<"$build_json")" = "$RELEASE_TAG"
