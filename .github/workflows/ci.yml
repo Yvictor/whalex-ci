@@ -252,6 +252,30 @@ jobs:
             '{schema_version:1,source_repository:"private",source_sha:$source_sha,checked_at:$checked_at,run_url:$run_url,conclusion:"success",suites:["frontend","backend","repository"]}' \
             >"$manifest"
           if gh release view "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            existing="$RUNNER_TEMP/existing-ci-manifest.json"
+            existing_valid=false
+            if gh release download "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" \
+                --pattern ci-manifest.json --output "$existing" >/dev/null 2>&1 \
+              && jq -e --arg sha "$SOURCE_SHA" '
+                .schema_version == 1 and .source_repository == "private" and
+                .source_sha == $sha and .conclusion == "success" and
+                ((.suites | sort) == ["backend","frontend","repository"]) and
+                (.run_url | test("^https://github\\.com/Yvictor/whalex-ci/actions/runs/[1-9][0-9]*$"))
+              ' "$existing" >/dev/null; then
+              existing_run_id="$(jq -r '.run_url | split("/")[-1]' "$existing")"
+              if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$existing_run_id" \
+                  | jq -e '
+                    .status == "completed" and .conclusion == "success" and
+                    .head_branch == "main" and .path == ".github/workflows/ci.yml" and
+                    .repository.full_name == "Yvictor/whalex-ci"
+                  ' >/dev/null; then
+                existing_valid=true
+              fi
+            fi
+            if test "$existing_valid" = true; then
+              echo "Existing immutable evidence remains valid; forced tests passed without replacing it."
+              exit 0
+            fi
             gh release delete "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
           fi
           gh release create "ci-$SOURCE_SHA" \
