@@ -1,0 +1,217 @@
+name: WhaleX private-source CI
+run-name: WhaleX CI ${{ inputs.source_sha || github.event.client_payload.source_sha || 'private-main' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character commit SHA from Yvictor/whalex; blank resolves private main
+        required: false
+        type: string
+      force:
+        description: Re-run even when a passing evidence release exists
+        required: false
+        default: false
+        type: boolean
+  repository_dispatch:
+    types:
+      - whalex-ci
+  schedule:
+    - cron: "17,47 * * * *"
+
+concurrency:
+  group: whalex-public-ci-${{ inputs.source_sha || github.event.client_payload.source_sha || 'private-main' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve immutable private source
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      already_passed: ${{ steps.evidence.outputs.already_passed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Resolve and validate source SHA
+        id: source
+        env:
+          DISPATCH_SHA: ${{ inputs.source_sha }}
+          API_SHA: ${{ github.event.client_payload.source_sha }}
+          WHALEX_SOURCE_DEPLOY_KEY: ${{ secrets.WHALEX_SOURCE_DEPLOY_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${DISPATCH_SHA:-${API_SHA:-}}"
+          if test -z "$source_sha"; then
+            source_sha="$(printf '%s' "$WHALEX_SOURCE_DEPLOY_KEY" | scripts/private-source-git.sh resolve-main)"
+          fi
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
+      - name: Check immutable passing evidence
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          FORCE_INPUT: ${{ inputs.force }}
+          FORCE_API: ${{ github.event.client_payload.force }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          force="${FORCE_INPUT:-${FORCE_API:-false}}"
+          if test "$force" != true && gh release view "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "already_passed=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "already_passed=false" >>"$GITHUB_OUTPUT"
+          fi
+
+  frontend:
+    name: Frontend typecheck and build
+    needs: resolve
+    if: needs.resolve.outputs.already_passed != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: source/web
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Checkout exact private source and destroy credential
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          WHALEX_SOURCE_DEPLOY_KEY: ${{ secrets.WHALEX_SOURCE_DEPLOY_KEY }}
+        working-directory: .
+        shell: bash
+        run: printf '%s' "$WHALEX_SOURCE_DEPLOY_KEY" | scripts/private-source-git.sh checkout "$SOURCE_SHA" "$GITHUB_WORKSPACE/source"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Production build
+        env:
+          APP_ENV: production
+          PUBLIC_BASE_URL: https://whalexstock.com
+          ROBOTS_INDEX: "true"
+        run: npm run build
+      - name: Analytics browser-block contract
+        run: npm run qa:analytics
+
+  backend:
+    name: Backend lint and tests
+    needs: resolve
+    if: needs.resolve.outputs.already_passed != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: source/backend-python
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Checkout exact private source and destroy credential
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          WHALEX_SOURCE_DEPLOY_KEY: ${{ secrets.WHALEX_SOURCE_DEPLOY_KEY }}
+        working-directory: .
+        shell: bash
+        run: printf '%s' "$WHALEX_SOURCE_DEPLOY_KEY" | scripts/private-source-git.sh checkout "$SOURCE_SHA" "$GITHUB_WORKSPACE/source"
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff
+        with:
+          version: "0.8.3"
+          enable-cache: false
+      - run: uv python install 3.12
+      - run: uv sync --frozen --group dev
+      - name: Python syntax check
+        run: uv run python -m compileall -q app scripts research/scripts
+      - name: Backend tests
+        run: uv run pytest -q
+      - name: Data pipeline tests
+        run: uv run pytest -q ../tools/tests
+      - name: Windmill generated-script and schedule contracts
+        run: uv run pytest -q ../tools/windmill/tests
+
+  repository:
+    name: Repository and Compose validation
+    needs: resolve
+    if: needs.resolve.outputs.already_passed != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Checkout exact private source and destroy credential
+        env:
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          WHALEX_SOURCE_DEPLOY_KEY: ${{ secrets.WHALEX_SOURCE_DEPLOY_KEY }}
+        shell: bash
+        run: printf '%s' "$WHALEX_SOURCE_DEPLOY_KEY" | scripts/private-source-git.sh checkout "$SOURCE_SHA" "$GITHUB_WORKSPACE/source"
+      - name: Patch and shell syntax
+        working-directory: source
+        shell: bash
+        run: |
+          git diff --check HEAD^
+          bash -n ops/*.sh
+      - name: Staging Compose config
+        working-directory: source
+        run: docker compose --env-file .env.staging.example -f docker-compose.yml config --quiet
+      - name: Production Compose config
+        working-directory: source
+        run: >-
+          docker compose --env-file .env.production.example
+          -f docker-compose.yml
+          -f docker-compose.production.yml
+          -f docker-compose.cloudflare.production.yml
+          config --quiet
+
+  record:
+    name: Publish immutable CI evidence
+    needs:
+      - resolve
+      - frontend
+      - backend
+      - repository
+    if: >-
+      always() &&
+      needs.resolve.result == 'success' &&
+      needs.resolve.outputs.already_passed != 'true' &&
+      needs.frontend.result == 'success' &&
+      needs.backend.result == 'success' &&
+      needs.repository.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create sanitized evidence release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          checked_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          manifest="$RUNNER_TEMP/ci-manifest.json"
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg checked_at "$checked_at" \
+            --arg run_url "$run_url" \
+            '{schema_version:1,source_repository:"private",source_sha:$source_sha,checked_at:$checked_at,run_url:$run_url,conclusion:"success",suites:["frontend","backend","repository"]}' \
+            >"$manifest"
+          gh release create "ci-$SOURCE_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "WhaleX CI $SOURCE_SHA" \
+            --notes "Private source commit \`$SOURCE_SHA\` passed the public Frontend, Backend, and Repository CI suites. No application source or source-derived artifact is attached. Run: $run_url" \
+            "$manifest#ci-manifest.json"
