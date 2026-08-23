@@ -24,6 +24,9 @@ trap cleanup EXIT INT TERM
 
 umask 077
 cat >"$key_file"
+# GitHub Actions secrets do not preserve a trailing newline. OpenSSH's PEM
+# parser requires one, so normalize it before the key is used.
+printf '\n' >>"$key_file"
 chmod 0600 "$key_file"
 grep -q '^-----BEGIN OPENSSH PRIVATE KEY-----$' "$key_file"
 grep -q '^-----END OPENSSH PRIVATE KEY-----$' "$key_file"

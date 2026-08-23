@@ -36,7 +36,7 @@ jobs:
       source_sha: ${{ steps.source.outputs.source_sha }}
       already_passed: ${{ steps.evidence.outputs.already_passed }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Resolve and validate source SHA
@@ -81,7 +81,7 @@ jobs:
       run:
         working-directory: source/web
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Checkout exact private source and destroy credential
@@ -91,7 +91,7 @@ jobs:
         working-directory: .
         shell: bash
         run: printf '%s' "$WHALEX_SOURCE_DEPLOY_KEY" | scripts/private-source-git.sh checkout "$SOURCE_SHA" "$GITHUB_WORKSPACE/source"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 22
       - run: npm ci
@@ -116,7 +116,7 @@ jobs:
       run:
         working-directory: source/backend-python
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Checkout exact private source and destroy credential
@@ -126,7 +126,7 @@ jobs:
         working-directory: .
         shell: bash
         run: printf '%s' "$WHALEX_SOURCE_DEPLOY_KEY" | scripts/private-source-git.sh checkout "$SOURCE_SHA" "$GITHUB_WORKSPACE/source"
-      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff
+      - uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244
         with:
           version: "0.8.3"
           enable-cache: false
@@ -148,7 +148,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
       - name: Checkout exact private source and destroy credential
