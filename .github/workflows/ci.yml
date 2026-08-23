@@ -276,7 +276,10 @@ jobs:
               echo "Existing immutable evidence remains valid; forced tests passed without replacing it."
               exit 0
             fi
-            gh release delete "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            # Keep the protected ci-* tag stable. --cleanup-tag can delete the
+            # release first and then fail to delete the protected tag, leaving
+            # an avoidable evidence gap.
+            gh release delete "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" --yes
           fi
           gh release create "ci-$SOURCE_SHA" \
             --repo "$GITHUB_REPOSITORY" \
