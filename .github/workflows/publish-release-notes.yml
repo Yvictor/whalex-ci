@@ -1,0 +1,82 @@
+name: Publish reviewed WhaleX release notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Production vMAJOR.MINOR.PATCH tag
+        required: true
+        type: string
+      source_sha:
+        description: Exact 40-character private source SHA running in Production
+        required: true
+        type: string
+      confirmation:
+        description: Enter PUBLISH RELEASE NOTES
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: whalex-public-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Validate immutable production identity and CI evidence
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$CONFIRMATION" = "PUBLISH RELEASE NOTES"
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh release view "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" >/dev/null
+          build_json="$(curl --fail --silent --show-error --max-time 15 https://whalexstock.com/whalex-build.json)"
+          test "$(jq -r '.commit_sha // empty' <<<"$build_json")" = "$SOURCE_SHA"
+          test "$(jq -r '.release_tag // empty' <<<"$build_json")" = "$RELEASE_TAG"
+      - name: Read only the reviewed note from exact private source
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          WHALEX_SOURCE_DEPLOY_KEY: ${{ secrets.WHALEX_SOURCE_DEPLOY_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$WHALEX_SOURCE_DEPLOY_KEY" | scripts/private-source-git.sh checkout "$SOURCE_SHA" "$RUNNER_TEMP/source"
+          note="$RUNNER_TEMP/source/docs/releases/$RELEASE_TAG.md"
+          test -f "$note" && test ! -L "$note"
+          size="$(stat -c '%s' "$note")"
+          test "$size" -ge 20 && test "$size" -le 51200
+          install -m 0600 "$note" "$RUNNER_TEMP/release-note.md"
+          rm -rf -- "$RUNNER_TEMP/source"
+      - name: Publish approved note without source artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release already exists" >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "股鯨 $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-note.md"
