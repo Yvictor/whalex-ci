@@ -1,3 +1,4 @@
+# The private checkout credential is destroyed before project commands run.
 name: WhaleX private-source CI
 run-name: WhaleX CI ${{ inputs.source_sha || github.event.client_payload.source_sha || 'private-main' }}
 
