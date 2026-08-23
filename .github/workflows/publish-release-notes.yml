@@ -25,6 +25,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     permissions:
@@ -32,6 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: main
           persist-credentials: false
       - name: Validate immutable production identity and CI evidence
         env:
@@ -45,7 +47,15 @@ jobs:
           test "$CONFIRMATION" = "PUBLISH RELEASE NOTES"
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          gh release view "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" >/dev/null
+          evidence="$RUNNER_TEMP/ci-manifest.json"
+          gh release download "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" \
+            --pattern ci-manifest.json --output "$evidence"
+          jq -e --arg sha "$SOURCE_SHA" '
+            .schema_version == 1 and .source_repository == "private" and
+            .source_sha == $sha and .conclusion == "success" and
+            ((.suites | sort) == ["backend","frontend","repository"]) and
+            (.run_url | test("^https://github\\.com/Yvictor/whalex-ci/actions/runs/[1-9][0-9]*$"))
+          ' "$evidence" >/dev/null
           build_json="$(curl --fail --silent --show-error --max-time 15 https://whalexstock.com/whalex-build.json)"
           test "$(jq -r '.commit_sha // empty' <<<"$build_json")" = "$SOURCE_SHA"
           test "$(jq -r '.release_tag // empty' <<<"$build_json")" = "$RELEASE_TAG"
@@ -62,6 +72,21 @@ jobs:
           test -f "$note" && test ! -L "$note"
           size="$(stat -c '%s' "$note")"
           test "$size" -ge 20 && test "$size" -le 51200
+          python3 - "$note" <<'PY'
+          import pathlib, re, sys
+          text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          blocked = {
+              "private key": r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+              "email address": r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+              "internal path": r"/(?:srv|home)/[^\s)`]+",
+              "secret file": r"(?:\.sec|\.env(?:\.[A-Za-z0-9_-]+)?)\b",
+              "internal host": r"(?i)\b(?:r9950|x3970)\b",
+              "credential assignment": r"(?i)\b(?:password|secret|token|api[_-]?key)\s*[:=]",
+          }
+          for label, pattern in blocked.items():
+              if re.search(pattern, text):
+                  raise SystemExit(f"release note rejected: contains {label}")
+          PY
           install -m 0600 "$note" "$RUNNER_TEMP/release-note.md"
           rm -rf -- "$RUNNER_TEMP/source"
       - name: Publish approved note without source artifacts

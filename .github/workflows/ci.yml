@@ -30,6 +30,7 @@ permissions:
 jobs:
   resolve:
     name: Resolve immutable private source
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -38,6 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: main
           persist-credentials: false
       - name: Resolve and validate source SHA
         id: source
@@ -65,11 +67,32 @@ jobs:
         run: |
           set -euo pipefail
           force="${FORCE_INPUT:-${FORCE_API:-false}}"
+          already_passed=false
           if test "$force" != true && gh release view "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "already_passed=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "already_passed=false" >>"$GITHUB_OUTPUT"
+            evidence="$RUNNER_TEMP/ci-manifest.json"
+            if gh release download "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" \
+                --pattern ci-manifest.json --output "$evidence" >/dev/null 2>&1 \
+              && jq -e --arg sha "$SOURCE_SHA" '
+                .schema_version == 1 and
+                .source_repository == "private" and
+                .source_sha == $sha and
+                .conclusion == "success" and
+                ((.suites | sort) == ["backend","frontend","repository"]) and
+                (.checked_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")) and
+                (.run_url | test("^https://github\\.com/Yvictor/whalex-ci/actions/runs/[1-9][0-9]*$"))
+              ' "$evidence" >/dev/null; then
+              run_id="$(jq -r '.run_url | split("/")[-1]' "$evidence")"
+              if gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" \
+                  | jq -e '
+                    .status == "completed" and .conclusion == "success" and
+                    .head_branch == "main" and .path == ".github/workflows/ci.yml" and
+                    .repository.full_name == "Yvictor/whalex-ci"
+                  ' >/dev/null; then
+                already_passed=true
+              fi
+            fi
           fi
+          echo "already_passed=$already_passed" >>"$GITHUB_OUTPUT"
 
   frontend:
     name: Frontend typecheck and build
@@ -83,6 +106,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: main
           persist-credentials: false
       - name: Checkout exact private source and destroy credential
         env:
@@ -94,17 +118,22 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 22
-      - run: npm ci
+      - name: Install dependencies without publishing private-source output
+        shell: bash
+        run: npm ci >"$RUNNER_TEMP/frontend-install.log" 2>&1 || { echo "frontend dependency installation failed" >&2; exit 1; }
       - name: Typecheck
-        run: npx tsc --noEmit
+        shell: bash
+        run: npx tsc --noEmit >"$RUNNER_TEMP/frontend-typecheck.log" 2>&1 || { echo "frontend typecheck failed; inspect locally in the private repository" >&2; exit 1; }
       - name: Production build
         env:
           APP_ENV: production
           PUBLIC_BASE_URL: https://whalexstock.com
           ROBOTS_INDEX: "true"
-        run: npm run build
+        shell: bash
+        run: npm run build >"$RUNNER_TEMP/frontend-build.log" 2>&1 || { echo "frontend build failed; inspect locally in the private repository" >&2; exit 1; }
       - name: Analytics browser-block contract
-        run: npm run qa:analytics
+        shell: bash
+        run: npm run qa:analytics >"$RUNNER_TEMP/frontend-analytics.log" 2>&1 || { echo "frontend analytics contract failed; inspect locally in the private repository" >&2; exit 1; }
 
   backend:
     name: Backend lint and tests
@@ -118,6 +147,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: main
           persist-credentials: false
       - name: Checkout exact private source and destroy credential
         env:
@@ -130,16 +160,23 @@ jobs:
         with:
           version: "0.8.3"
           enable-cache: false
-      - run: uv python install 3.12
-      - run: uv sync --frozen --group dev
+      - name: Install Python and dependencies without publishing private-source output
+        shell: bash
+        run: |
+          uv python install 3.12 >"$RUNNER_TEMP/backend-python.log" 2>&1 || { echo "Python installation failed" >&2; exit 1; }
+          uv sync --frozen --group dev >"$RUNNER_TEMP/backend-install.log" 2>&1 || { echo "backend dependency installation failed" >&2; exit 1; }
       - name: Python syntax check
-        run: uv run python -m compileall -q app scripts research/scripts
+        shell: bash
+        run: uv run python -m compileall -q app scripts research/scripts >"$RUNNER_TEMP/backend-compile.log" 2>&1 || { echo "backend syntax check failed; inspect locally in the private repository" >&2; exit 1; }
       - name: Backend tests
-        run: uv run pytest -q
+        shell: bash
+        run: uv run pytest -q >"$RUNNER_TEMP/backend-tests.log" 2>&1 || { echo "backend tests failed; inspect locally in the private repository" >&2; exit 1; }
       - name: Data pipeline tests
-        run: uv run pytest -q ../tools/tests
+        shell: bash
+        run: uv run pytest -q ../tools/tests >"$RUNNER_TEMP/pipeline-tests.log" 2>&1 || { echo "data pipeline tests failed; inspect locally in the private repository" >&2; exit 1; }
       - name: Windmill generated-script and schedule contracts
-        run: uv run pytest -q ../tools/windmill/tests
+        shell: bash
+        run: uv run pytest -q ../tools/windmill/tests >"$RUNNER_TEMP/windmill-tests.log" 2>&1 || { echo "Windmill contract tests failed; inspect locally in the private repository" >&2; exit 1; }
 
   repository:
     name: Repository and Compose validation
@@ -150,6 +187,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: main
           persist-credentials: false
       - name: Checkout exact private source and destroy credential
         env:
@@ -161,19 +199,22 @@ jobs:
         working-directory: source
         shell: bash
         run: |
-          git diff --check HEAD^
-          bash -n ops/*.sh
+          git diff --check HEAD^ >"$RUNNER_TEMP/repository-diff.log" 2>&1 || { echo "repository diff validation failed; inspect privately" >&2; exit 1; }
+          bash -n ops/*.sh >"$RUNNER_TEMP/repository-shell.log" 2>&1 || { echo "shell syntax validation failed; inspect privately" >&2; exit 1; }
       - name: Staging Compose config
         working-directory: source
-        run: docker compose --env-file .env.staging.example -f docker-compose.yml config --quiet
+        shell: bash
+        run: docker compose --env-file .env.staging.example -f docker-compose.yml config --quiet >"$RUNNER_TEMP/staging-compose.log" 2>&1 || { echo "Staging Compose validation failed; inspect privately" >&2; exit 1; }
       - name: Production Compose config
         working-directory: source
-        run: >-
-          docker compose --env-file .env.production.example
-          -f docker-compose.yml
-          -f docker-compose.production.yml
-          -f docker-compose.cloudflare.production.yml
-          config --quiet
+        shell: bash
+        run: |
+          docker compose --env-file .env.production.example \
+            -f docker-compose.yml \
+            -f docker-compose.production.yml \
+            -f docker-compose.cloudflare.production.yml \
+            config --quiet >"$RUNNER_TEMP/production-compose.log" 2>&1 \
+            || { echo "Production Compose validation failed; inspect privately" >&2; exit 1; }
 
   record:
     name: Publish immutable CI evidence
@@ -210,6 +251,9 @@ jobs:
             --arg run_url "$run_url" \
             '{schema_version:1,source_repository:"private",source_sha:$source_sha,checked_at:$checked_at,run_url:$run_url,conclusion:"success",suites:["frontend","backend","repository"]}' \
             >"$manifest"
+          if gh release view "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "ci-$SOURCE_SHA" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+          fi
           gh release create "ci-$SOURCE_SHA" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
