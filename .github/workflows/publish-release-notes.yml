@@ -80,6 +80,7 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           WHALEX_SOURCE_DEPLOY_KEY: ${{ secrets.WHALEX_SOURCE_DEPLOY_KEY }}
+          GITHUB_API_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
