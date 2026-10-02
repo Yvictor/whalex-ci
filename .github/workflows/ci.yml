@@ -163,6 +163,9 @@ jobs:
         with:
           version: "0.8.3"
           enable-cache: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 22
       - name: Install Python and dependencies without publishing private-source output
         shell: bash
         run: |
@@ -180,6 +183,19 @@ jobs:
       - name: Windmill generated-script and schedule contracts
         shell: bash
         run: uv run pytest -q ../tools/windmill/tests >"$RUNNER_TEMP/windmill-tests.log" 2>&1 || { echo "Windmill contract tests failed; inspect locally in the private repository" >&2; exit 1; }
+      - name: Typed client contract and binary compatibility
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f tools/partner-data/check.sh; then
+            PARTNER_BACKEND_ENVIRONMENT="$RUNNER_TEMP/client-contract-backend-env" \
+              PARTNER_PYTHON_ENVIRONMENT="$RUNNER_TEMP/client-contract-python-env" \
+              bash tools/partner-data/check.sh >"$RUNNER_TEMP/client-contract-tests.log" 2>&1 \
+              || { echo "client contract checks failed; inspect locally in the private repository" >&2; exit 1; }
+          else
+            echo "client contract entrypoint is absent in this historical source revision"
+          fi
 
   repository:
     name: Repository and Compose validation
@@ -209,6 +225,21 @@ jobs:
         working-directory: source
         shell: bash
         run: docker compose --env-file .env.staging.example -f docker-compose.yml config --quiet >"$RUNNER_TEMP/staging-compose.log" 2>&1 || { echo "Staging Compose validation failed; inspect privately" >&2; exit 1; }
+      - name: Optional Staging data Compose config
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f docker-compose.partner-staging.yml; then
+            PARTNER_STAGING_DATA_DIR=/tmp/isolated-staging-data \
+              WHALEX_PARTNER_CURSOR_SECRET=synthetic-non-secret-validation-value \
+              WHALEX_PARTNER_READ_ACCESS_KEY_ID=synthetic-not-a-storage-key \
+              WHALEX_PARTNER_READ_SECRET_ACCESS_KEY=synthetic-not-a-storage-secret \
+              docker compose --env-file .env.staging.example \
+                -f docker-compose.yml -f docker-compose.partner-staging.yml \
+                config --quiet >"$RUNNER_TEMP/staging-data-compose.log" 2>&1 \
+              || { echo "optional Staging Compose validation failed; inspect privately" >&2; exit 1; }
+          fi
       - name: Production Compose config
         working-directory: source
         shell: bash
