@@ -233,8 +233,8 @@ jobs:
           if test -f docker-compose.partner-staging.yml; then
             PARTNER_STAGING_DATA_DIR=/tmp/isolated-staging-data \
               WHALEX_PARTNER_CURSOR_SECRET=synthetic-non-secret-validation-value \
-              S3_ACCESS_KEY_ID=synthetic-not-a-storage-key \
-              S3_SECRET_ACCESS_KEY=synthetic-not-a-storage-secret \
+              WHALEX_PARTNER_READ_ACCESS_KEY_ID=synthetic-not-a-storage-key \
+              WHALEX_PARTNER_READ_SECRET_ACCESS_KEY=synthetic-not-a-storage-secret \
               docker compose --env-file .env.staging.example \
                 -f docker-compose.yml -f docker-compose.partner-staging.yml \
                 config --quiet >"$RUNNER_TEMP/staging-data-compose.log" 2>&1 \
